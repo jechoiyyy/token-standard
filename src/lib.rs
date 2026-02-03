@@ -61,7 +61,7 @@ impl TokenState {
             .ok_or(TokenError::BalanceOverFlow)?;
 
         self.balances.insert(from.clone(), from_bal - amount);
-        self.balances.insert(to.clone(), to_bal + amount);
+        self.balances.insert(to.clone(), to_bal);
 
         Ok(())
     }
