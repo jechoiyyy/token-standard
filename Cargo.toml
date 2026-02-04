@@ -4,3 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+
+[dev-dependencies]	# 테스크/벤치마크에서만 사용
+criterion = "0.5"
+
+[[bench]]
+name = "balance_operations"
+harness = false
