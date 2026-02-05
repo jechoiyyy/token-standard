@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::collections::HashMap;
 
 #[derive(Debug, PartialEq)]
 pub enum TokenError {
@@ -9,6 +9,11 @@ pub enum TokenError {
     SelfTransfer,
     ZeroAmount,
     BalanceOverFlow,
+    SelfApproval,
+    InsufficientAllowance {
+        required: Balance,
+        available: Balance,
+    },
 }
 
 pub type Address = String; // 일단 간단하게
@@ -16,6 +21,7 @@ pub type Balance = u64;
 
 pub struct TokenState {
     balances: HashMap<Address, Balance>,
+    allowances: HashMap<(Address, Address), Balance>,
     total_supply: Balance,
 }
 
@@ -37,6 +43,7 @@ impl TokenState {
 
         Self {
             balances,
+            allowances: HashMap::new(),
             total_supply: initial_supply,
         }
     }
@@ -76,8 +83,77 @@ impl TokenState {
 
         Ok(())
     }
-}
 
+    pub fn approve(
+        &mut self,
+        owner: &Address,
+        spender: &Address,
+        amount: Balance,
+    ) -> Result<(), TokenError> {
+        // 1. owner == spender check
+        if owner == spender {
+            return Err(TokenError::SelfApproval);
+        }
+        // 2. Save in allowances
+        self.allowances
+            .insert((owner.clone(), spender.clone()), amount);
+        // 3. return Ok(())
+        Ok(())
+    }
+
+    pub fn allowance(&self, owner: &Address, spender: &Address) -> Balance {
+        // Retrieve from allowances using the (owner, spender)key
+        // if not found, return 0
+        self.allowances
+            .get(&(owner.clone(), spender.clone()))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn transfer_from(
+        &mut self,
+        spender: &Address,
+        from: &Address,
+        to: &Address,
+        amount: Balance,
+    ) -> Result<(), TokenError> {
+        if from == to {
+            return Err(TokenError::SelfTransfer);
+        }
+        if amount == 0 {
+            return Err(TokenError::ZeroAmount);
+        }
+
+        let current_allowance = self.allowance(from, spender);
+        if current_allowance < amount {
+            return Err(TokenError::InsufficientAllowance {
+                required: amount,
+                available: current_allowance,
+            });
+        }
+
+        let from_bal = self.balance_of(from);
+        if from_bal < amount {
+            return Err(TokenError::InsufficientBalance {
+                required: amount,
+                available: from_bal,
+            });
+        }
+
+        let to_bal = self
+            .balance_of(to)
+            .checked_add(amount)
+            .ok_or(TokenError::BalanceOverFlow)?;
+
+        self.balances.insert(from.clone(), from_bal - amount);
+        self.balances.insert(to.clone(), to_bal);
+
+        self.allowances
+            .insert((from.clone(), spender.clone()), current_allowance - amount);
+
+        Ok(())
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -116,7 +192,7 @@ mod tests {
 
         let bob = "bob".to_string();
         let balance = token.balance_of(&bob);
-        assert_eq!(balance, 1000);
+        assert_eq!(balance, 0);
     }
 
     #[test]
@@ -127,7 +203,7 @@ mod tests {
         let mut token = TokenState::new(creator.clone(), initial_supply);
 
         let result = token.transfer(&creator, &recipient, 100);
-        
+
         assert!(result.is_ok());
         assert_eq!(token.balance_of(&creator), 900);
         assert_eq!(token.balance_of(&recipient), 100);
@@ -143,7 +219,13 @@ mod tests {
 
         let result = token.transfer(&creator, &recipient, 200);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err(), TokenError::InsufficientBalance { required:200, available: 100 });
+        assert_eq!(
+            result.unwrap_err(),
+            TokenError::InsufficientBalance {
+                required: 200,
+                available: 100
+            }
+        );
     }
 
     #[test]
@@ -179,5 +261,131 @@ mod tests {
 
         let result = token.transfer(&creator, &reciptient, 200);
         assert_eq!(result.unwrap_err(), TokenError::BalanceOverFlow);
+    }
+
+    #[test]
+    fn test_approve_success() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        let result = token.approve(&alice, &bob, 100);
+
+        assert!(result.is_ok());
+        assert_eq!(token.allowance(&alice, &bob), 100);
+    }
+
+    #[test]
+    fn test_approve_self() {
+        let alice = "alice".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        let result = token.approve(&alice, &alice, 100);
+
+        assert_eq!(result.unwrap_err(), TokenError::SelfApproval);
+    }
+
+    #[test]
+    fn test_approve_zero() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        let result = token.approve(&alice, &bob, 0);
+
+        assert!(result.is_ok());
+        assert_eq!(token.allowance(&alice, &bob), 0);
+    }
+
+    #[test]
+    fn test_approve_overwrite() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        let result = token.approve(&alice, &bob, 100);
+        let result2 = token.approve(&alice, &bob, 200);
+
+        assert!(result.is_ok());
+        assert!(result2.is_ok());
+        assert_eq!(token.allowance(&alice, &bob), 200);
+    }
+
+    #[test]
+    fn test_transfer_from_success() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let charlie = "charlie".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        token.approve(&alice, &bob, 100).unwrap();
+
+        let result = token.transfer_from(&bob, &alice, &charlie, 50);
+
+        assert!(result.is_ok());
+        assert_eq!(token.balance_of(&alice), 950);
+        assert_eq!(token.balance_of(&charlie), 50);
+        assert_eq!(token.allowance(&alice, &bob), 50);
+    }
+
+    #[test]
+    fn test_transfer_from_insufficient_allowance() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let charlie = "charlie".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        token.approve(&alice, &bob, 50).unwrap();
+        let result = token.transfer_from(&bob, &alice, &charlie, 100);
+
+        assert_eq!(
+            result.unwrap_err(),
+            TokenError::InsufficientAllowance {
+                required: 100,
+                available: 50
+            }
+        );
+    }
+
+    #[test]
+    fn test_transfer_from_insufficient_balance() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let charlie = "charlie".to_string();
+        let initial_supply = 100;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        token.approve(&alice, &bob, 200).unwrap();
+        let result = token.transfer_from(&bob, &alice, &charlie, 150);
+
+        assert_eq!(
+            result.unwrap_err(),
+            TokenError::InsufficientBalance {
+                required: 150,
+                available: 100
+            }
+        );
+    }
+
+    #[test]
+    fn test_transfer_from_updates_allowance() {
+        let alice = "alice".to_string();
+        let bob = "bob".to_string();
+        let david = "david".to_string();
+        let charlie = "charlie".to_string();
+        let initial_supply = 1000;
+        let mut token = TokenState::new(alice.clone(), initial_supply);
+
+        token.approve(&alice, &bob, 100).unwrap();
+        token.transfer_from(&bob, &alice, &charlie, 30).unwrap();
+        token.transfer_from(&bob, &alice, &david, 20).unwrap();
+
+        assert_eq!(token.allowance(&alice, &bob), 50);
     }
 }
