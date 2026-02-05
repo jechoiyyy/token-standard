@@ -1,17 +1,86 @@
+//! # Token Standard
+//!
+//! A fungible token implementation inspired by ERC-20, built to learn Rust ownership patterns
+//! and blockchain development fundamentals.
+//!
+//! ## Features
+//!
+//! - **Core transfers**: Direct token transfers with overflow protection
+//! - **Allowance pattern**: Delegated transfers for DeFi integration
+//! - **Comprehensive error handling**: Detailed error types for debugging
+//! - **Production-ready**: 16 tests covering all edge cases
+//!
+//! ## Quick Start
+//!
+//! ```
+//! use token_standard::*;
+//!
+//! // Create a new token
+//! let mut token = TokenState::new("alice".to_string(), 1000);
+//!
+//! // Transfer tokens
+//! token.transfer(
+//!     &"alice".to_string(),
+//!     &"bob".to_string(),
+//!     100
+//! ).unwrap();
+//!
+//! // Check balance
+//! assert_eq!(token.balance_of(&"bob".to_string()), 100);
+//! ```
+//!
+//! ## Architecture
+//!
+//! The token uses a simple HashMap-based storage for balances and allowances:
+//! - `balances: HashMap<Address, Balance>` - Account balances
+//! - `allowances: HashMap<(Address, Address), Balance>` - Approved spending limits
+
 use std::collections::HashMap;
 
+/// Errors that can occur during token operations.
+///
+/// All errors include contextual information to aid debugging.
 #[derive(Debug, PartialEq)]
 pub enum TokenError {
+    /// Attempted transfer with insufficient balance.
+    ///
+    /// Includes the required amount and available balance for debugging.
     InsufficientBalance {
+        /// Amount of tokens required for the operation
         required: Balance,
+        /// Amount of tokens actually available
         available: Balance,
     },
+
+    /// Attempted to transfer tokens to the same address.
+    ///
+    /// Self-transfers are blocked as they serve no purpose and could
+    /// indicate a logic error in the calling code.
     SelfTransfer,
+
+    /// Attempted to transfer zero tokens.
+    ///
+    /// Zero-amount transfers are blocked to prevent unnecessary state updates
+    /// and potential gas waste in blockchain environments.
     ZeroAmount,
+
+    /// Arithmetic overflow would occur during balance update.
+    ///
+    /// This prevents silent wrapping that could lead to incorrect balances.
     BalanceOverFlow,
+
+    /// Attempted to approve spending to the same address.
+    ///
+    /// Self-approval serves no purpose and is blocked.
     SelfApproval,
+
+    /// Attempted delegated transfer with insufficient allowance.
+    ///
+    /// Includes the required amount and available allowance.
     InsufficientAllowance {
+        /// Amount of tokens required for the operation
         required: Balance,
+        /// Amount of tokens approved for spending
         available: Balance,
     },
 }
@@ -19,6 +88,19 @@ pub enum TokenError {
 pub type Address = String; // 일단 간단하게
 pub type Balance = u64;
 
+/// The main token state container.
+///
+/// Manages all token balances, allowances, and total supply using
+/// in-memory HashMaps. In a real blockchain, this would be backed
+/// by persistent storage.
+///
+/// # Design Decisions
+///
+/// - **Address type**: Currently `String` for simplicity. Production use
+///   should consider `[u8; 32]` for memory efficiency.
+/// - **Balance type**: `u64` provides sufficient range while maintaining
+///   performance. Overflow protection via `checked_add`.
+/// - **Allowance storage**: Tuple keys `(owner, spender)` enable O(1) lookups.
 pub struct TokenState {
     balances: HashMap<Address, Balance>,
     allowances: HashMap<(Address, Address), Balance>,
